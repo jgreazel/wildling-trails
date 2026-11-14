@@ -1,0 +1,231 @@
+/*
+ * Wildling Trails — design tokens.
+ * Every visual decision lives here as a custom property on :root. Custom
+ * properties pierce Shadow DOM, so each web component reads these directly.
+ * Mobile-first: base values target a ~375px portrait phone; fluid sizes use clamp().
+ */
+
+:root {
+  /* ── World palette (art direction) ─────────────────────────────── */
+  --color-meadow: #86b86a;
+  --color-meadow-dark: #5e9a4f;
+  --color-foliage: #3f7d4a;
+  --color-water: #4fa7a8;
+  --color-terracotta: #c8643b;
+  --color-slate: #4f6d8f;
+  --color-plum: #7d5a7a;
+  --color-timber: #8a5a3b;
+  --color-lamp: #ffc56b;
+  --color-night: #1d2440;
+
+  /* ── Surfaces & ink ───────────────────────────────────────────── */
+  --color-bg: #1b2626;
+  --color-bg-deep: #121a1b;
+  --color-paper: #fbf6ea;
+  --color-paper-hi: #fffbf2;
+  --color-paper-2: #f4ead3;
+  --color-paper-3: #eadcbd;
+  --color-paper-line: #e0cfa9;
+  --color-ink: #2a2420;
+  --color-ink-soft: #54473b;
+  --color-ink-muted: #85745f;
+  --color-accent: #c8643b;
+  --color-accent-strong: #a64e29;
+  --color-accent-ink: #fff7ea;
+  --color-highlight: #ffe2a0;
+  --color-highlight-soft: #fff0cc;
+  --color-focus: #ffc56b;
+  --color-on-dark: #fff8ec;
+  --color-on-dark-muted: rgba(255, 248, 236, 0.74);
+  --color-scrim: rgba(16, 20, 24, 0.42);
+  --color-scrim-strong: rgba(14, 18, 22, 0.62);
+  --color-fade: #000;
+  --color-silhouette: #3a312a;
+  --color-paper-glass: rgba(251, 246, 234, 0.82);
+  --color-sheen: rgba(255, 255, 255, 0.3);
+  --color-shade: rgba(0, 0, 0, 0.2);
+  --color-shade-strong: rgba(0, 0, 0, 0.42);
+  --color-glyph-shade: rgba(0, 0, 0, 0.25);
+
+  /* Wooden sign (location banner) */
+  --color-wood: #9a6640;
+  --color-wood-light: #c58f5d;
+  --color-wood-dark: #6a4128;
+  --color-wood-grain: rgba(58, 32, 16, 0.2);
+  --color-nail: #4a3d31;
+  --color-nail-hi: #e8d6b3;
+
+  /* Wildling element chips */
+  --el-ember: #df7438;
+  --el-tide: #3496ad;
+  --el-bloom: #5c9c45;
+  --el-gust: #7b97c2;
+  --el-default: #8a7867;
+  --el-ink: #fffaf0;
+
+  /* ── Composite surfaces ───────────────────────────────────────── */
+  --panel-bg: linear-gradient(180deg, var(--color-paper-hi) 0%, var(--color-paper) 45%, var(--color-paper-2) 100%);
+  --panel-inner-line: var(--color-paper-line);
+  --sign-bg:
+    repeating-linear-gradient(177deg, transparent 0 6px, var(--color-wood-grain) 6px 7px, transparent 7px 12px),
+    linear-gradient(180deg, var(--color-wood-light) 0%, var(--color-wood) 55%, var(--color-wood-dark) 100%);
+  --title-scrim:
+    radial-gradient(120% 85% at 50% 42%, rgba(10, 14, 18, 0) 38%, rgba(10, 14, 18, 0.5) 100%),
+    linear-gradient(180deg, rgba(18, 26, 34, 0.62) 0%, rgba(18, 26, 34, 0.08) 34%, rgba(18, 26, 34, 0.12) 58%, rgba(12, 16, 22, 0.82) 100%);
+
+  --gloss: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.36), transparent 60%);
+
+  /* Wordmark */
+  --wordmark-fill: #fff3d9;
+  --wordmark-accent: var(--color-lamp);
+  --wordmark-ink: #2a2420;
+  --wordmark-trail: rgba(255, 243, 217, 0.85);
+  --wordmark-outline: 0.045em;
+  --wordmark-depth: 0.11em;
+  --wordmark-tilt: -3deg;
+
+  /* ── Typography ───────────────────────────────────────────────── */
+  --font-display: 'Fredoka', 'Nunito', ui-rounded, 'Segoe UI', system-ui, sans-serif;
+  --font-body: 'Nunito', ui-rounded, 'Segoe UI', system-ui, sans-serif;
+  --font-ui: var(--font-body);
+
+  --fs-2xs: clamp(0.66rem, 0.63rem + 0.15vw, 0.74rem);
+  --fs-xs: clamp(0.74rem, 0.7rem + 0.2vw, 0.82rem);
+  --fs-sm: clamp(0.86rem, 0.82rem + 0.22vw, 0.96rem);
+  --fs-md: clamp(1rem, 0.95rem + 0.3vw, 1.16rem);
+  --fs-lg: clamp(1.14rem, 1.04rem + 0.55vw, 1.4rem);
+  --fs-xl: clamp(1.38rem, 1.2rem + 1vw, 1.9rem);
+  --fs-hero: clamp(3.1rem, 1.6rem + 8.4vw, 6.6rem);
+
+  --fw-body: 700;
+  --fw-bold: 800;
+  --fw-display: 600;
+  --fw-display-bold: 700;
+  --lh-tight: 1.08;
+  --lh-snug: 1.25;
+  --lh-body: 1.45;
+  --tracking-wide: 0.08em;
+  --tracking-wider: 0.16em;
+
+  /* ── Spacing ──────────────────────────────────────────────────── */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+  --hud-gap: clamp(10px, 2.6vw, 22px);
+
+  /* ── Shape ────────────────────────────────────────────────────── */
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 26px;
+  --radius-pill: 999px;
+  --border-w: 3px;
+  --border-w-thin: 2px;
+  --inner-line-inset: 5px;
+
+  /* ── Elevation ────────────────────────────────────────────────── */
+  --shadow-pop: 0 3px 0 rgba(42, 36, 32, 0.38);
+  --shadow-pop-lift: 0 5px 0 rgba(42, 36, 32, 0.45);
+  --shadow-pop-pressed: 0 1px 0 rgba(42, 36, 32, 0.45);
+  --shadow-bevel: inset 0 2px 0 rgba(255, 255, 255, 0.28), inset 0 -3px 0 rgba(0, 0, 0, 0.18);
+  --shadow-inset-soft: inset 0 1px 2px rgba(42, 36, 32, 0.35);
+  --shadow-panel: 0 4px 0 rgba(42, 36, 32, 0.4), 0 14px 34px rgba(0, 0, 0, 0.34);
+  --shadow-sheet: 0 -10px 34px rgba(0, 0, 0, 0.34);
+  --shadow-text-dark: 0 2px 0 rgba(0, 0, 0, 0.32), 0 3px 12px rgba(0, 0, 0, 0.4);
+  --shadow-inset-hi: inset 0 2px 0 rgba(255, 255, 255, 0.55);
+
+  /* ── Layering (bottom → top) ──────────────────────────────────── */
+  --z-hud: 1;
+  --z-dialog: 20;
+  --z-touch: 30;
+  --z-menu: 40;
+  --z-banner: 45;
+  --z-card: 50;
+  --z-title: 60;
+  --z-fade: 70;
+  --z-fatal: 100;
+
+  /* ── Motion ───────────────────────────────────────────────────── */
+  --dur-instant: 80ms;
+  --dur-fast: 140ms;
+  --dur-base: 240ms;
+  --dur-slow: 420ms;
+  --dur-slower: 700ms;
+  --dur-bounce: 900ms;
+  --dur-pulse: 1700ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.55, 0, 1, 0.45);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --motion-rise: 14px;
+
+  /* ── Layout ───────────────────────────────────────────────────── */
+  --tap-min: 44px;
+  --dialog-max: 720px;
+  --dialog-min-h: 5.75rem;
+  --menu-width: 360px;
+  --card-max: 30rem;
+  --sheet-max-h: 82%;
+
+  /* Safe areas (notches, home indicators) */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
+  /* ── Touch pad ────────────────────────────────────────────────── */
+  --pad-cell: clamp(44px, 13vw, 56px);
+  --pad-btn: clamp(58px, 17vw, 70px);
+  --pad-btn-sm: calc(var(--pad-btn) * 0.82);
+  --pad-lift: var(--space-4);
+  --pad-opacity: 0.9;
+  --pad-face: rgba(251, 246, 234, 0.88);
+  --pad-face-active: var(--color-accent);
+  --pad-ink: rgba(42, 36, 32, 0.92);
+  --pad-ink-shadow: rgba(42, 36, 32, 0.5);
+  --pad-arrow: rgba(84, 71, 59, 0.85);
+  --pad-base: radial-gradient(circle at 50% 45%, rgba(18, 22, 26, 0.12), rgba(18, 22, 26, 0.3));
+  --pad-ring: rgba(255, 248, 236, 0.22);
+
+  /* Space other HUD pieces keep clear of the touch pad (set while it is visible). */
+  --touch-clearance: calc(var(--pad-lift) + var(--pad-cell) * 3 + var(--space-2));
+  --touch-side-clearance: calc(max(var(--pad-cell) * 3, var(--pad-btn) * 1.95) + var(--space-3));
+  --hud-bottom-clearance: 0px;
+  --hud-side-clearance: 0px;
+}
+
+/* The touch pad marks the root while it is shown. Portrait phones: lift HUD panels above it. */
+:root[data-touch-pad] {
+  --hud-bottom-clearance: var(--touch-clearance);
+}
+
+/* Short landscape screens: tuck panels between the d-pad and the buttons instead. */
+@media (orientation: landscape) and (max-height: 540px) {
+  :root[data-touch-pad] {
+    --hud-bottom-clearance: 0px;
+    --hud-side-clearance: var(--touch-side-clearance);
+  }
+}
+
+@media (min-width: 720px) {
+  :root {
+    --dialog-min-h: 6.5rem;
+    --menu-width: 380px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-rise: 0px;
+    --dur-base: 160ms;
+    --dur-slow: 200ms;
+    --dur-slower: 240ms;
+    --ease-spring: var(--ease-out);
+  }
+}

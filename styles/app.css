@@ -1,0 +1,144 @@
+/*
+ * Wildling Trails — page layout. Tokens live in tokens.css; component styles
+ * live inside each component's shadow root. Mobile-first.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--color-bg);
+}
+
+body {
+  font-family: var(--font-body);
+  font-weight: var(--fw-body);
+  line-height: var(--lh-body);
+  color: var(--color-on-dark);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Full-viewport stage: the canvas fills it, the HUD floats above. */
+.stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  isolation: isolate;
+  touch-action: none;
+  background:
+    radial-gradient(120% 90% at 50% 40%, var(--color-bg) 0%, var(--color-bg-deep) 100%);
+}
+
+#game {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+  touch-action: none;
+}
+
+/*
+ * HUD overlay: transparent to pointers; each component opts its own parts in.
+ * Deliberately not a scroll container (no overflow here) so the stage's
+ * touch-action: none still applies to HUD taps — no double-tap zoom while
+ * mashing through dialogue. Scrollable panels set their own touch-action.
+ */
+.hud {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-hud);
+  pointer-events: none;
+}
+
+/* Hide components until their definitions load (no flash of unstyled markup). */
+.hud > :not(:defined) {
+  display: none;
+}
+
+/* The title screen owns the whole screen; keep the touch pad out of sight under it. */
+.hud:has(> title-screen:not([hidden])) > touch-pad {
+  visibility: hidden;
+}
+
+/* Fatal / no-JS message: a paper note in the middle of the stage. */
+.fatal {
+  position: absolute;
+  z-index: var(--z-fatal);
+  left: 50%;
+  top: 50%;
+  width: min(26rem, calc(100% - 2 * var(--space-4) - var(--safe-left) - var(--safe-right)));
+  margin: 0;
+  padding: var(--space-5) var(--space-5);
+  transform: translate(-50%, -50%);
+  font-family: var(--font-body);
+  font-weight: var(--fw-body);
+  font-size: var(--fs-md);
+  line-height: var(--lh-body);
+  text-align: center;
+  color: var(--color-ink);
+  background: var(--panel-bg);
+  border: var(--border-w) solid var(--color-ink);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+  pointer-events: auto;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.fatal::before {
+  content: 'Oh no!';
+  display: block;
+  margin-bottom: var(--space-2);
+  font-family: var(--font-display);
+  font-weight: var(--fw-display);
+  font-size: var(--fs-lg);
+  color: var(--color-accent);
+}
+
+.fatal[hidden] {
+  display: none;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+@media (min-width: 720px) {
+  .fatal {
+    padding: var(--space-6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
