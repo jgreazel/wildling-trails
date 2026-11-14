@@ -23,7 +23,8 @@ import { isActive } from '../src/world/map-utils.js';
 import { state, resetState, loadState, hasSave } from '../src/core/state.js';
 import { createCameraRig } from '../src/render/camera-rig.js';
 import { createDayNight } from '../src/render/daynight.js';
-import { DIR_NAMES, PLAYER_LOOK, PREVIEW_MAP } from '../src/config.js';
+import { DIRS, DIR_NAMES, PLAYER_LOOK, PREVIEW_MAP } from '../src/config.js';
+import { FOLLOW_DISTANCE } from '../src/systems/follower.js';
 import { STARTERS, WILD_SPECIES, WILDLINGS } from '../src/data/wildlings.js';
 import { WREN_PICK } from '../src/world/maps/lab.js';
 
@@ -52,13 +53,33 @@ function installStorage() {
 function createFakeInput() {
   /** @type {string|null} */
   let held = null;
+  /** @type {{x:number, y:number}|null} */
+  let stick = null;
   const presses = new Set();
   return {
     hold(dir) {
       held = dir ?? null;
+      stick = null;
+    },
+    /** Analog stick (x right, y down), magnitude ≤ 1. */
+    steer(x, y) {
+      stick = { x, y };
+      held = null;
     },
     release() {
       held = null;
+      stick = null;
+    },
+    moveVector() {
+      if (stick) {
+        const m = Math.hypot(stick.x, stick.y);
+        if (m < 1e-9) return { x: 0, y: 0, magnitude: 0, analog: true };
+        const mag = Math.min(1, m);
+        return { x: (stick.x / m) * mag, y: (stick.y / m) * mag, magnitude: mag, analog: true };
+      }
+      const d = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[held];
+      if (!d) return { x: 0, y: 0, magnitude: 0, analog: false };
+      return { x: d[0], y: d[1], magnitude: 1, analog: false };
     },
     press(action) {
       presses.add(action);
@@ -74,6 +95,7 @@ function createFakeInput() {
     setVirtual() {},
     clear() {
       held = null;
+      stick = null;
       presses.clear();
     },
     endFrame() {
@@ -277,14 +299,8 @@ async function walkthrough(t, mine, wild) {
     if (failure) throw failure;
   }
 
-  // Exact on purpose: on the last frame of a step t can be 0.9999…, and a
-  // tolerance would report "stopped" one frame before the arrival.
-  const stopped = () => {
-    if (!playerModel) return false;
-    const p = playerModel.group.position;
-    const tile = session.playerTile;
-    return p.x === tile.x && p.z === tile.y;
-  };
+  // Free movement: stopped = the controller reports no motion.
+  const stopped = () => !!playerModel && !!session.playerPos && !session.playerPos.moving;
   const idle = () => !session.busy && stopped();
   const flag = (name) => !!state.flags[name];
   const spoke = (re, speaker) => pages.some((p) => re.test(p.text) && (speaker === undefined || p.speaker === speaker));
@@ -300,26 +316,48 @@ async function walkthrough(t, mine, wild) {
   const npcAt = (x, y) =>
     npcs.list.some(({ def, h }) => isActive(def, state.flags) && h.x === x && h.y === y);
 
+  /** Delta from the player to the centre of tile (x, y). */
+  const toward = (x, y) => {
+    const p = session.playerPos;
+    return { dx: x - p.x, dz: y - p.z, dist: Math.hypot(x - p.x, y - p.z) };
+  };
+
   /**
-   * Walk on the current map toward (gx, gy), re-planning every frame around NPCs,
-   * until `done()` holds.
+   * Steer on the current map toward (gx, gy) with the analog stick, aiming at
+   * the centre of the next tile on a path that is re-planned every frame
+   * around NPCs, until `done()` holds.
    */
   async function travel(mapId, gx, gy, { done, max = 3000, label }) {
-    const isDone = done ?? (() => session.mapModel?.id === mapId && session.playerTile.x === gx && session.playerTile.y === gy && idle());
+    const atGoal = () =>
+      session.mapModel?.id === mapId && session.playerTile.x === gx && session.playerTile.y === gy;
+    const isDone = done ?? (() => atGoal() && toward(gx, gy).dist < 0.06 && idle());
     for (let i = 0; i < max; i++) {
       if (isDone()) {
         input.release();
         return;
       }
       const model = session.mapModel;
-      if (!session.busy && model?.id === mapId) {
+      if (!session.busy && model?.id === mapId && session.playerPos) {
         if (npcs.model !== model) await refreshNpcs();
         const from = session.playerTile;
         const path =
           findPath(model, from, { x: gx, y: gy }, state.flags, npcAt) ??
           findPath(model, from, { x: gx, y: gy }, state.flags);
         assert.ok(path, `no path to (${gx}, ${gy}) for ${label} (${where()})`);
-        input.hold(path[0] ?? null);
+        let target = { x: gx, y: gy };
+        if (path.length) {
+          const d = DIRS[path[0]];
+          target = { x: from.x + d.dx, y: from.y + d.dy };
+          // A ledge hop lands two tiles on; aim straight over it.
+          if (model.typeAt(target.x, target.y).ledge) target = { x: target.x + d.dx, y: target.y + d.dy };
+        }
+        const { dx, dz, dist } = toward(target.x, target.y);
+        if (!path.length && dist < 0.04) input.release();
+        else {
+          // Full speed on the way, easing off at the final tile so we stop on it.
+          const k = (path.length ? 1 : Math.min(1, Math.max(0.36, dist * 2.5))) / Math.max(dist, 1e-9);
+          input.steer(dx * k, dz * k);
+        }
       } else {
         input.release();
       }
@@ -519,7 +557,7 @@ async function walkthrough(t, mine, wild) {
     const follower = scene.children.find((o) => o.name === `wildling:${mine}`);
     const p = playerModel.group.position;
     assert.ok(follower?.visible, 'follower visible after the hop');
-    assert.ok(Math.hypot(follower.position.x - p.x, follower.position.z - p.z) <= 1.01, 'follower caught up');
+    assert.ok(Math.hypot(follower.position.x - p.x, follower.position.z - p.z) <= FOLLOW_DISTANCE + 0.05, 'follower caught up');
     assert.ok(Math.abs(follower.position.y - p.y) < 1e-6, 'follower landed on the shore level');
   }
 

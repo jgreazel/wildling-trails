@@ -30,11 +30,15 @@ npm run validate
 
 | Action | Keyboard | Controller (Xbox layout) | Touch |
 | --- | --- | --- | --- |
-| Move (tap = turn) | Arrows / WASD | D-pad / left stick | D-pad |
+| Move (free, 360°) | Arrows / WASD (8 directions) | Left stick (tilt = speed) or d-pad | D-pad |
 | Talk / confirm | Z, Space, J | A | A |
 | Cancel / hold to run | X, Backspace, K (or Shift to run) | B (hold X, bumpers or triggers to run) | B |
 | Menu (partner, journal, save, sound, clock) | Enter / Esc | Menu or Y | START |
 | Cycle the clock (live → morning → day → evening → night) | T | View | Menu → Clock |
+
+Movement is free and analog: the map is still a grid of tiles underneath (walls, cliffs,
+stairs, ledges, doors), but you walk at any angle, slide along walls, and a partial stick
+tilt walks slower. Your partner follows the exact path you walked.
 
 Any controller the browser reports with the standard mapping works (Xbox, PlayStation,
 Switch Pro, most USB/Bluetooth pads). Browsers only expose a controller after you press

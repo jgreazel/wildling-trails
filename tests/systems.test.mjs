@@ -4,10 +4,11 @@ import * as THREE from 'three';
 import { createWorldSession } from '../src/systems/world-session.js';
 import { createClock } from '../src/systems/clock.js';
 import { createMover } from '../src/systems/grid-mover.js';
+import { FOLLOW_DISTANCE } from '../src/systems/follower.js';
 import { pickAffectionLine } from '../src/systems/interaction.js';
 import { createMapMusic } from '../src/systems/map-music.js';
 import { state, resetState, addPartner, setFlag } from '../src/core/state.js';
-import { PLAYER_LOOK, WALK_STEP_MS, HOP_MS } from '../src/config.js';
+import { PLAYER_LOOK, HOP_MS, WALK_SPEED, RUN_SPEED, PLAYER_RADIUS } from '../src/config.js';
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -161,14 +162,23 @@ function fakeView(model) {
 
 function fakeInput() {
   let held = null;
+  /** @type {{x:number, y:number}|null} */
+  let stick = null;
   const down = new Set();
   let presses = new Set();
   return {
     hold(dir) {
       held = dir;
+      stick = null;
+    },
+    /** Analog stick (x right, y down); magnitude ≤ 1. */
+    steer(x, y) {
+      stick = { x, y };
+      held = null;
     },
     release() {
       held = null;
+      stick = null;
     },
     press(action) {
       presses.add(action);
@@ -179,6 +189,17 @@ function fakeInput() {
     },
     isDown: (a) => down.has(a) || held === a,
     heldDirection: () => held,
+    moveVector() {
+      if (stick) {
+        const m = Math.hypot(stick.x, stick.y);
+        if (m < 1e-9) return { x: 0, y: 0, magnitude: 0, analog: true };
+        const mag = Math.min(1, m);
+        return { x: (stick.x / m) * mag, y: (stick.y / m) * mag, magnitude: mag, analog: true };
+      }
+      const d = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[held];
+      if (!d) return { x: 0, y: 0, magnitude: 0, analog: false };
+      return { x: d[0], y: d[1], magnitude: 1, analog: false };
+    },
     pressed(a) {
       if (!presses.has(a)) return false;
       presses.delete(a);
@@ -190,6 +211,7 @@ function fakeInput() {
     },
     clear() {
       held = null;
+      stick = null;
       down.clear();
       presses = new Set();
     },
@@ -387,14 +409,25 @@ function harness(t, { random = () => 0.5, choices = [], deps = {} } = {}) {
     async idle() {
       await h.until(() => !session.busy);
     },
-    /** Hold dir until exactly one step has started, release, and let it settle. */
-    async stepOnce(dir) {
-      const start = h.tile();
-      const p = h.player();
-      input.hold(dir);
-      await h.until(() => Math.abs(p.group.position.x - start.x) > 0.01 || Math.abs(p.group.position.z - start.y) > 0.01 || session.busy);
+    /** Player position (continuous) — never null once spawned. */
+    pos: () => session.playerPos,
+    /** Steer straight to the centre of tile (tx, ty), easing off near it, then stop. */
+    async walkTo(tx, ty, max = 600) {
+      for (let i = 0; i < max; i++) {
+        const p = session.playerPos;
+        if (session.busy || !p) break;
+        const dx = tx - p.x;
+        const dz = ty - p.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist < 0.04) break;
+        const k = Math.min(1, Math.max(0.36, dist * 2.5)) / dist;
+        input.steer(dx * k, dz * k);
+        session.update(DT);
+        input.endFrame();
+        await tick();
+      }
       input.release();
-      await h.until(() => !session.busy && !p.moving && Number.isInteger(p.group.position.x) && Number.isInteger(p.group.position.z));
+      await h.until(() => !session.playerPos?.moving || session.busy);
       await h.frames(2);
     },
   };
@@ -463,52 +496,73 @@ test('affection lines vary and use the partner name', () => {
 
 // ── session: movement ─────────────────────────────────────────────────────
 
-test('walking moves tile by tile and stops at walls (with throttled bumps)', async (t) => {
+test('free movement: continuous walking at WALK_SPEED, stops flush at walls, one bump per contact', async (t) => {
   const h = harness(t);
   await h.session.loadMap('town', 5, 1, 'right');
   assert.deepEqual(h.tile(), { x: 5, y: 1, facing: 'right' });
-  assert.equal(h.session.busy, false);
 
-  const xs = [];
-  let fractional = false;
   h.input.hold('right');
-  for (let i = 0; i < 120; i++) {
+  await h.frames(30);
+  const halfSecond = h.pos().x - 5;
+  assert.ok(halfSecond > WALK_SPEED * 0.5 * 0.85 && halfSecond <= WALK_SPEED * 0.5 + 1e-6, `≈ walk speed (${halfSecond.toFixed(2)} tiles in 0.5 s)`);
+  assert.ok(!Number.isInteger(h.player().group.position.x), 'positions are continuous');
+  const xs = [];
+  for (let i = 0; i < 90; i++) {
     await h.frames(1);
-    const p = h.player().group.position;
-    if (!Number.isInteger(p.x)) fractional = true;
     if (xs.at(-1) !== state.x) xs.push(state.x);
   }
-  assert.deepEqual(xs, [5, 6, 7, 8, 9, 10], 'one tile at a time, no skipping');
-  assert.ok(fractional, 'the model interpolates between tiles');
-  assert.equal(h.player().group.position.x, 10);
+  h.input.release();
+  await h.frames(10);
+  assert.deepEqual(xs.slice(-1), [10], 'state tracks the tile under the player');
+  assert.ok(Math.abs(h.pos().x - (10.5 - PLAYER_RADIUS)) < 1e-3, `flush against the tree line (${h.pos().x})`);
   assert.equal(h.player().moving, false);
-  const bumps = h.audio.count('sfx', 'bump');
-  assert.ok(bumps >= 1, 'bumping the wall makes a sound');
-  // ~0.75 s of pushing after reaching x=10 → at most 3-4 bumps.
-  assert.ok(bumps <= 4, `bump throttled (got ${bumps})`);
+  assert.equal(h.audio.count('sfx', 'bump'), 1, 'one bump for one contact, not a stream');
   assert.equal(h.player().facing, 'right');
 });
 
-test('a short tap of a new direction only turns; holding walks', async (t) => {
+test('analog: partial tilt walks slower; any angle, and the body faces it', async (t) => {
   const h = harness(t);
-  await h.session.loadMap('town', 5, 1, 'down');
-  h.input.hold('left');
-  await h.frames(1);
+  await h.session.loadMap('town', 5, 4, 'down');
+  h.input.steer(0.5, 0);
+  await h.frames(60);
   h.input.release();
-  await h.frames(20);
-  assert.deepEqual(h.tile(), { x: 5, y: 1, facing: 'left' });
-  assert.equal(state.facing, 'left');
-  assert.equal(h.player().facing, 'left');
+  const slow = h.pos().x - 5;
+  assert.ok(slow > WALK_SPEED * 0.5 * 0.85 && slow < WALK_SPEED * 0.5 * 1.05, `half tilt ≈ half speed (${slow.toFixed(2)})`);
 
-  // Holding a new direction turns first, then walks after TURN_DELAY_MS.
-  h.input.hold('right');
-  await h.frames(3);
-  assert.equal(h.tile().x, 5, 'still turning');
-  assert.equal(h.tile().facing, 'right');
+  await h.session.loadMap('town', 7, 4, 'down');
+  h.input.steer(Math.SQRT1_2, Math.SQRT1_2);
+  await h.frames(20);
+  h.input.release();
+  const p = h.pos();
+  assert.ok(p.x - 7 > 0.4 && Math.abs(p.x - 7 - (p.z - 4)) < 1e-6, 'moves diagonally');
+  assert.ok(Math.abs(p.yaw - Math.PI / 4) < 1e-9, 'faces the diagonal');
+  assert.ok(['down', 'right'].includes(h.player().facing));
+});
+
+test('sliding: pushing diagonally into a wall keeps moving along it', async (t) => {
+  const h = harness(t);
+  await h.session.loadMap('town', 5, 1, 'up');
+  h.input.steer(0.7, -0.7);
   await h.frames(40);
   h.input.release();
-  await h.frames(30);
-  assert.ok(h.tile().x > 5, 'walked after the turn delay');
+  const p = h.pos();
+  assert.ok(Math.abs(p.z - (0.5 + PLAYER_RADIUS)) < 1e-3, `against the top wall (${p.z})`);
+  assert.ok(p.x > 6, `slid along it (${p.x.toFixed(2)})`);
+  assert.equal(h.audio.count('sfx', 'bump'), 0, 'sliding is not bumping');
+});
+
+test('corner assist: heading straight for a doorway off-centre slides onto its line', async (t) => {
+  const h = harness(t);
+  await h.session.loadMap('room', 3, 4, 'down');
+  await h.idle();
+  h.input.steer(1, 0);
+  await h.frames(7);
+  assert.ok(h.pos().x > 3.25, `off-centre (${h.pos().x.toFixed(2)})`);
+  h.input.hold('down');
+  await h.until(() => h.session.mapModel?.id === 'town', 120);
+  h.input.release();
+  await h.idle();
+  assert.deepEqual(h.tile(), { x: 3, y: 4, facing: 'down' }, 'slipped through the one-tile exit');
 });
 
 test('running uses the run cycle and the b button', async (t) => {
@@ -520,9 +574,8 @@ test('running uses the run cycle and the b button', async (t) => {
   h.input.release();
   h.input.setDown('b', false);
   assert.ok(h.player().everRan, 'run cycle requested from the model');
-  // Two run steps take ~270 ms (≈17 frames) vs ~500 ms walking.
-  assert.ok(frames < 25, `ran quickly (${frames} frames)`);
-  // The run key works too.
+  // 1.5 tiles at RUN_SPEED ≈ 0.2 s (≈12 frames) vs ≈ 0.375 s walking.
+  assert.ok(frames < 17, `ran quickly (${frames} frames)`);
   await h.frames(30);
   h.input.setDown('run', true);
   h.input.hold('right');
@@ -531,13 +584,13 @@ test('running uses the run cycle and the b button', async (t) => {
   assert.ok(runFrames < 30, `ran with the run key (${runFrames} frames)`);
 });
 
-test('ledge: hopping lands two tiles away with an arc and a sound', async (t) => {
+test('ledge: pushing into one hops two tiles with an arc and a sound; one way only', async (t) => {
   const h = harness(t);
   await h.session.loadMap('town', 3, 4, 'down');
   const ys = [];
   let peak = 0;
   h.input.hold('down');
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 45; i++) {
     await h.frames(1);
     peak = Math.max(peak, h.player().group.position.y);
     if (ys.at(-1) !== state.y) ys.push(state.y);
@@ -547,7 +600,8 @@ test('ledge: hopping lands two tiles away with an arc and a sound', async (t) =>
   assert.equal(h.audio.count('sfx', 'ledge'), 1);
   assert.ok(peak > 0.5 + 0.4, `hop arc rises above the ground (peak ${peak.toFixed(2)})`);
   assert.ok(h.player().hops >= 1);
-  // You can't hop back up.
+  assert.equal(h.audio.count('sfx', 'bump'), 0, 'a hop is not a bump');
+
   await h.frames(30);
   await h.session.loadMap('town', 3, 6, 'up');
   h.input.hold('up');
@@ -555,18 +609,24 @@ test('ledge: hopping lands two tiles away with an arc and a sound', async (t) =>
   h.input.release();
   await h.frames(20);
   assert.deepEqual([state.x, state.y], [3, 6], 'ledges are one-way');
+  assert.equal(h.audio.count('sfx', 'ledge'), 1);
 });
 
 test('stairs change level smoothly; cliffs block', async (t) => {
   const h = harness(t);
   await h.session.loadMap('town', 8, 8, 'down');
   assert.equal(h.player().group.position.y, 0.5);
-  await h.stepOnce('down');
-  assert.deepEqual([state.x, state.y], [8, 9]);
-  assert.equal(h.player().group.position.y, 0.25, 'half a level on the stairs');
-  await h.stepOnce('down');
-  assert.deepEqual([state.x, state.y], [8, 10]);
-  assert.equal(h.player().group.position.y, 0);
+  const heights = [];
+  h.input.hold('down');
+  await h.until(() => {
+    heights.push(h.player().group.position.y);
+    return state.y === 10;
+  });
+  h.input.release();
+  await h.frames(40);
+  assert.equal(h.player().group.position.y, 0, 'down on level 0');
+  assert.ok(heights.some((y) => y > 0.05 && y < 0.45), 'passed through in-between heights');
+  for (let i = 1; i < heights.length; i++) assert.ok(heights[i] <= heights[i - 1] + 1e-9, 'never bounces up');
 
   await h.session.loadMap('town', 2, 9, 'down');
   await h.frames(20);
@@ -602,7 +662,9 @@ test('warps change maps, place the player and come back', async (t) => {
   assert.ok(h.audio.calls.some((c) => c[0] === 'music' && c[1] === 'home'));
 
   // Back out over the exit mat.
-  await h.stepOnce('down');
+  h.input.hold('down');
+  await h.until(() => h.session.mapModel?.id === 'town');
+  h.input.release();
   await h.idle();
   assert.equal(h.session.mapModel.id, 'town');
   assert.deepEqual(h.tile(), { x: 3, y: 4, facing: 'down' });
@@ -632,10 +694,12 @@ test('triggers fire once per arrival', async (t) => {
   assert.deepEqual(h.ui.said.at(-1).pages, ['Ping!']);
   await h.frames(60);
   assert.equal(h.log.ping, 1, 'standing still does not re-fire');
-  await h.stepOnce('up');
+  await h.walkTo(10, 5);
   assert.equal(state.y, 5);
   assert.equal(h.log.ping, 1);
-  await h.stepOnce('down');
+  h.input.hold('down');
+  await h.until(() => h.log.ping === 2);
+  h.input.release();
   await h.idle();
   assert.equal(h.log.ping, 2, 'fires again on the next arrival');
 });
@@ -721,8 +785,7 @@ test('flags show/hide NPCs and re-apply map flags', async (t) => {
   // The ghost at (8,6) is hidden (showIf ghost_here): it neither shows nor blocks.
   const ghostLook = h.session.mapModel.npcs[1].look;
   assert.equal(h.npcModel(ghostLook).group.visible, false);
-  await h.stepOnce('down');
-  await h.stepOnce('down');
+  await h.walkTo(8, 6);
   assert.deepEqual([state.x, state.y], [8, 6], 'walked through the hidden ghost tile');
 
   await h.session.loadMap('town', 8, 4, 'down');
@@ -732,7 +795,7 @@ test('flags show/hide NPCs and re-apply map flags', async (t) => {
   assert.ok(view.flagsApplied > before, 'MapView.applyFlags on every flag change');
   assert.equal(h.npcModel(ghostLook).group.visible, true, 'ghost appears');
   await h.frames(15);
-  await h.stepOnce('down'); // (8,5)
+  await h.walkTo(8, 5);
   h.input.hold('down');
   await h.frames(30);
   h.input.release();
@@ -741,7 +804,7 @@ test('flags show/hide NPCs and re-apply map flags', async (t) => {
 
 // ── session: partner & follower ───────────────────────────────────────────
 
-test('givePartner spawns a follower that trails one tile behind', async (t) => {
+test('givePartner spawns a follower that trails behind along the player path', async (t) => {
   const h = harness(t);
   await h.session.loadMap('town', 5, 1, 'right');
   const member = await h.session.runScript((api) => api.givePartner('emberkit'));
@@ -754,24 +817,29 @@ test('givePartner spawns a follower that trails one tile behind', async (t) => {
   await h.frames(30);
   assert.deepEqual([f.group.position.x, f.group.position.z], [4, 1], 'appears behind the player');
 
-  await h.stepOnce('right');
-  await h.frames(5);
-  assert.deepEqual([state.x, state.y], [6, 1]);
-  assert.deepEqual([f.group.position.x, f.group.position.z], [5, 1], 'trails into the previous tile');
+  await h.walkTo(8, 1);
+  await h.frames(10);
+  const gap = h.pos().x - f.group.position.x;
+  assert.ok(Math.abs(gap - FOLLOW_DISTANCE) < 0.05, `trails FOLLOW_DISTANCE behind (${gap.toFixed(3)})`);
+  assert.equal(f.group.position.z, 1);
+  assert.equal(f.moving, false, 'stops when you stop');
 
-  // Several steps: always exactly one tile behind.
-  h.input.hold('right');
-  await h.until(() => state.x === 9);
+  // Round a corner: the follower takes the same corner instead of cutting it.
+  await h.walkTo(8, 4);
+  let cut = false;
+  h.input.hold('left');
+  for (let i = 0; i < 20; i++) {
+    await h.frames(1);
+    const { x, z } = f.group.position;
+    if (x < 7.9 && z < 3.9) cut = true;
+  }
   h.input.release();
-  await h.frames(30);
-  assert.equal(h.tile().x, 10);
-  assert.deepEqual([f.group.position.x, f.group.position.z], [9, 1]);
+  assert.equal(cut, false, 'follows the path, not a straight line');
 
-  // The follower never blocks: turn around and walk through it.
-  await h.stepOnce('left');
-  assert.equal(h.tile().x, 9);
-  await h.frames(5);
-  assert.deepEqual([f.group.position.x, f.group.position.z], [10, 1], 'swapped places');
+  // The follower never blocks: walk straight back through it.
+  await h.walkTo(8, 4);
+  await h.walkTo(5, 4);
+  assert.equal(h.tile().x, 5, 'walked through the partner');
 });
 
 test('follower reappears behind the player after a warp and hops ledges', async (t) => {
@@ -781,15 +849,20 @@ test('follower reappears behind the player after a warp and hops ledges', async 
   let f = h.wild.find((m) => m.arg === 'mossbun' && !m.disposed);
   assert.deepEqual([f.group.position.x, f.group.position.z], [3, 3], 'behind (on the door tile)');
 
-  // Hop the ledge: follower walks into (3,4), then hops to (3,6).
-  await h.stepOnce('down'); // hop to (3,6)
-  assert.equal(state.y, 6);
-  assert.deepEqual([f.group.position.x, f.group.position.z], [3, 4]);
   const hopsBefore = f.hops;
-  await h.stepOnce('down'); // (3,7)
+  let peak = 0;
+  h.input.hold('down');
+  await h.until(() => state.y === 6);
+  for (let i = 0; i < 40; i++) {
+    await h.frames(1);
+    peak = Math.max(peak, f.group.position.y);
+  }
+  h.input.release();
   await h.frames(30);
-  assert.deepEqual([f.group.position.x, f.group.position.z], [3, 6]);
   assert.ok(f.hops > hopsBefore, 'follower hopped the ledge too');
+  assert.ok(peak > 0.5 + 0.2, `with an arc (peak ${peak.toFixed(2)})`);
+  assert.ok(f.group.position.z > 5.5, 'and landed below it');
+  assert.ok(Math.abs(f.group.position.y - 0.5) < 1e-3, 'back on the ground');
 
   await h.session.loadMap('room', 3, 4, 'up');
   f = h.wild.find((m) => m.arg === 'mossbun' && !m.disposed);
@@ -840,7 +913,7 @@ test('forced-RNG encounter peeks out, shows its dialog and marks seen', async (t
 
   // At least 5 steps before the next one.
   const before = h.ui.said.length;
-  await h.stepOnce('right'); // (3,8) grass
+  await h.walkTo(3, 8); // grass
   assert.equal(h.ui.said.length, before, 'no back-to-back encounters');
 });
 
@@ -876,7 +949,7 @@ test('a throwing script leaves the session playable and the dialog closed', asyn
   assert.equal(h.session.busy, false);
   assert.ok(h.logs.warn.length >= 1);
   // Still walks.
-  await h.stepOnce('down');
+  await h.walkTo(5, 2);
   assert.equal(state.y, 2);
 });
 
@@ -1019,20 +1092,24 @@ test('real factories (whatever their state) integrate without crashing', async (
   assert.ok(h.scene.children.length > 0);
 });
 
-test('step timings match the config constants', async (t) => {
+test('speeds and hop timing match the config constants', async (t) => {
   const h = harness(t);
   await h.session.loadMap('town', 1, 1, 'right');
   h.input.hold('right');
   const walkFrames = await h.until(() => state.x === 3);
   h.input.release();
-  // Two walk steps ≈ 2 × WALK_STEP_MS.
-  assert.ok(Math.abs(walkFrames * DT * 1000 - 2 * WALK_STEP_MS) <= 2 * DT * 1000, `walk ${walkFrames} frames`);
+  // 1.5 tiles at WALK_SPEED, plus a little ease-in.
+  const walkMs = walkFrames * DT * 1000;
+  const ideal = (1.5 / WALK_SPEED) * 1000;
+  assert.ok(walkMs >= ideal - DT * 1000 && walkMs <= ideal + 80, `walk ${walkFrames} frames`);
+  assert.ok(RUN_SPEED > WALK_SPEED * 1.6);
   await h.frames(30);
   await h.session.loadMap('town', 3, 4, 'down');
   h.input.hold('down');
   const hopFrames = await h.until(() => state.y === 6);
   h.input.release();
-  assert.ok(Math.abs(hopFrames * DT * 1000 - HOP_MS) <= 2 * DT * 1000, `hop ${hopFrames} frames`);
+  const hopMs = hopFrames * DT * 1000;
+  assert.ok(hopMs >= HOP_MS && hopMs <= HOP_MS + 120, `hop ${hopFrames} frames`);
 });
 
 test('map music: a map without a track stops the previous song', () => {

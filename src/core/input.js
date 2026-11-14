@@ -111,6 +111,24 @@ const PREVENT_KEYS = new Set([
   'enter',
 ]);
 
+/** Radial dead zone for analog sticks; deflection is rescaled to 0…1 beyond it. */
+export const AXIS_DEAD_ZONE = 0.2;
+
+/**
+ * Apply a radial dead zone and rescale, so a stick resting slightly off-centre
+ * never drifts and full tilt still reaches magnitude 1.
+ * @param {number} x @param {number} y
+ * @returns {{x:number, y:number, magnitude:number}}
+ */
+export function shapeStick(x, y) {
+  const fx = Number.isFinite(x) ? x : 0;
+  const fy = Number.isFinite(y) ? y : 0;
+  const mag = Math.hypot(fx, fy);
+  if (mag <= AXIS_DEAD_ZONE) return { x: 0, y: 0, magnitude: 0 };
+  const scaled = Math.min(1, (mag - AXIS_DEAD_ZONE) / (1 - AXIS_DEAD_ZONE));
+  return { x: (fx / mag) * scaled, y: (fy / mag) * scaled, magnitude: scaled };
+}
+
 /** Source id used by `setVirtual` (the on-screen touch pad). */
 const VIRTUAL = 'virtual';
 
@@ -195,6 +213,8 @@ export function createInput() {
   const listeners = new Map();
   /** @type {EventTarget|null} */
   let target = null;
+  /** @type {Map<string, {x:number, y:number}>} analog source → raw stick position */
+  const axes = new Map();
 
   /** @param {Dir} dir */
   function bumpDirection(dir) {
@@ -285,6 +305,7 @@ export function createInput() {
 
   /** Release everything and forget buffered presses. Listeners are kept. */
   function clear() {
+    axes.clear();
     for (const set of held.values()) set.clear();
     dirOrder = [];
     buffer.clear();
@@ -388,6 +409,45 @@ export function createInput() {
      */
     isHeldBy(action, source) {
       return held.get(action)?.has(source) ?? false;
+    },
+
+    /**
+     * Report an analog stick position (x: −1 left … 1 right, y: −1 up … 1 down).
+     * (0, 0) releases the source.
+     * @param {string} source @param {number} x @param {number} y
+     */
+    setAxis(source, x, y) {
+      if (typeof source !== 'string' || !source) return;
+      const fx = Number.isFinite(x) ? x : 0;
+      const fy = Number.isFinite(y) ? y : 0;
+      if (fx === 0 && fy === 0) axes.delete(source);
+      else axes.set(source, { x: fx, y: fy });
+    },
+
+    /**
+     * The movement the player asks for: the strongest analog stick outside its
+     * dead zone, else the held direction keys/buttons as an 8-way unit vector.
+     * When opposite directions are both held, the newest wins.
+     * @returns {{x:number, y:number, magnitude:number, analog:boolean}}
+     */
+    moveVector() {
+      let best = null;
+      for (const raw of axes.values()) {
+        const v = shapeStick(raw.x, raw.y);
+        if (v.magnitude > 0 && (!best || v.magnitude > best.magnitude)) best = v;
+      }
+      if (best) return { ...best, analog: true };
+      const isHeld = (/** @type {Dir} */ d) => (held.get(d)?.size ?? 0) > 0;
+      const newest = (/** @type {Dir} */ a, /** @type {Dir} */ b) => (dirOrder.lastIndexOf(a) > dirOrder.lastIndexOf(b) ? a : b);
+      let x = 0;
+      let y = 0;
+      if (isHeld('left') && isHeld('right')) x = newest('left', 'right') === 'left' ? -1 : 1;
+      else x = isHeld('left') ? -1 : isHeld('right') ? 1 : 0;
+      if (isHeld('up') && isHeld('down')) y = newest('up', 'down') === 'up' ? -1 : 1;
+      else y = isHeld('up') ? -1 : isHeld('down') ? 1 : 0;
+      if (!x && !y) return { x: 0, y: 0, magnitude: 0, analog: false };
+      const len = Math.hypot(x, y);
+      return { x: x / len, y: y / len, magnitude: 1, analog: false };
     },
 
     /** Release every action (window blur, tab hidden). Map loads keep held directions. */

@@ -16,8 +16,26 @@ export const WALK_STEP_MS = 250;
 export const RUN_STEP_MS = 135;
 /** Milliseconds for a ledge hop (covers two tiles). */
 export const HOP_MS = 430;
-/** A direction tap shorter than this only turns the player in place. */
+/** A direction tap shorter than this only turns the player in place (grid NPC rules). */
 export const TURN_DELAY_MS = 90;
+
+/** Free movement: player speeds in tiles per second (same pace as the grid steps). */
+export const WALK_SPEED = 1000 / WALK_STEP_MS;
+export const RUN_SPEED = 1000 / RUN_STEP_MS;
+/** Player collision radius in tiles (a 1-tile doorway leaves 0.4 of slack). */
+export const PLAYER_RADIUS = 0.3;
+
+/**
+ * Nearest cardinal direction for a yaw (rotation.y, see FACING_ANGLE).
+ * @param {number} yaw
+ * @returns {Dir}
+ */
+export function yawToDir(yaw) {
+  const x = Math.sin(yaw);
+  const z = Math.cos(yaw);
+  if (Math.abs(x) > Math.abs(z)) return x > 0 ? 'right' : 'left';
+  return z >= 0 ? 'down' : 'up';
+}
 
 /** @typedef {'up'|'down'|'left'|'right'} Dir */
 

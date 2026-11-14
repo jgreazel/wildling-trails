@@ -141,6 +141,12 @@ Unknown types must render as a neutral placeholder and log a warning, never cras
 - Actor occupancy (NPCs, player) is checked by systems on top of `canStep`. The
   follower never blocks the player.
 
+NPCs and scripted walks move by these rules tile to tile. The **player moves freely**
+over the same rules (`systems/collision.js`): a circle of `PLAYER_RADIUS` may overlap a
+tile only if `canStep`-style rules allow entering it from the tile under its centre, so
+it slides along walls and round corners. Ledges hop when pushed into roughly head-on;
+warps, triggers and tall grass fire when the centre enters a new tile.
+
 ## Module contracts
 
 ### core (lead) — already implemented
@@ -256,6 +262,8 @@ input.onPress(action, fn) → off   // fn() may return true to CONSUME the press
                                   // listeners and the polled buffer don't see it.
                                   // Listeners run newest-registered first.
 input.setVirtual(action, down)    // from <touch-pad>
+input.setAxis(src, x, y)          // analog stick (−1…1); (0, 0) releases
+input.moveVector() → {x, y, magnitude, analog}  // strongest stick past AXIS_DEAD_ZONE, else 8-way keys
 input.setSource(action, src, down)// any named source, e.g. 'pad0:b0' (setVirtual = source 'virtual')
 input.isHeldBy(action, src) → bool
 input.clear()                     // release everything (window blur / tab hidden). Not called on
@@ -323,7 +331,8 @@ createWorldSession({ scene, cameraRig, dayNight, ui, audio, input, deps? }) → 
   loadMap(mapId, x?, y?, facing?, { fade = true } = {}) → Promise,
   update(dt, elapsed),
   setPaused(bool),
-  get busy, get mapModel, get playerTile /* {x, y, facing} */,
+  get busy, get mapModel, get playerTile /* {x, y, facing}: tile under the player */,
+  get playerPos /* {x, z, yaw, moving} | null: continuous position */,
   runScript(idOrFn) → Promise
 }
 // deps (optional, for tests): { buildMap, createHumanoid, createWildlingModel, getMapDef, random }
@@ -331,12 +340,15 @@ createWorldSession({ scene, cameraRig, dayNight, ui, audio, input, deps? }) → 
 // ui = { dialog, banner, fade, card, menu, title, touch } (the elements above)
 ```
 
-Responsibilities: grid movement for player/NPCs/follower (turn-in-place on a short tap,
-walk/run, ledge hop arc, stairs), collision (`canStep` + actor occupancy with
-reservations while moving), interaction (a → NPC/object in front; across counters;
-facing the follower → affection), NPC AI (`stand`/`turn`/`wander`), the follower
-(walks into the player's previous tile, hops ledges, appears behind the player after a
-warp), warps (fade, door sfx), triggers, tall-grass rustle + flavour encounters (with a
+Responsibilities: free analog movement for the player (`player-controller.js` +
+`free-mover.js` + `collision.js`: stick magnitude sets speed, run on `run`/`b`, wall
+sliding, corner assist into doorways, ledge hop arc, smooth stairs), grid movement for
+NPCs (`grid-mover.js`, occupancy with reservations while moving), interaction (a → the
+nearest NPC within `TALK_REACH` inside a `TALK_CONE` in front, else objects on the tiles
+ahead; across counters; facing the follower → affection; works while walking), NPC AI
+(`stand`/`turn`/`wander`), the follower (`follower.js`: walks the player's recorded
+path `FOLLOW_DISTANCE` behind, copying stairs and hop arcs; appears behind the player
+after a warp), warps (fade, door sfx), triggers, tall-grass rustle + flavour encounters (with a
 partner: occasionally a wild Pipwing/Dewsnail peeks out, cries, gets marked seen, and
 leaves — no battles), music per map (`musicNight` at night), location banner on
 outdoor entry, keeping `state.mapId/x/y/facing` current, autosave on map change.

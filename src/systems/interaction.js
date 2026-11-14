@@ -1,13 +1,14 @@
 /**
  * The a-button in the overworld: talk to whoever / read whatever is in front.
  *
- * Priority for the tile in front of the player:
- *   1. a visible NPC (turns to face the player unless noTurn)
- *   2. a counter/desk with an NPC on the far side → talk across it
- *   3. an active object with `text` or `script` (solid ones first)
- *   4. the follower → a little moment of affection
+ * The player moves freely, so "in front" is a cone along their facing:
+ *   1. the nearest visible NPC within reach and roughly ahead (they turn to
+ *      face the player unless noTurn; the player turns to face them)
+ *   2. a counter/desk ahead with an NPC on the far side → talk across it
+ *   3. an active object with `text` or `script` on a tile ahead (solid first)
+ *   4. the follower, if it's right there → a little moment of affection
  */
-import { DIRS, OPPOSITE } from '../config.js';
+import { DIRS, dirBetween, yawToDir } from '../config.js';
 import { isActive } from '../world/map-utils.js';
 
 /** Object types you can talk across. */
@@ -63,6 +64,31 @@ export function pickAffectionLine({ species, name, indoor, night, random, last =
   return options[Math.floor(random() * options.length) % options.length];
 }
 
+/** How far (tiles, centre to centre) the a-button reaches. */
+export const TALK_REACH = 1.45;
+/** Half-angle (radians) of the "in front" cone. */
+export const TALK_CONE = (60 * Math.PI) / 180;
+
+/**
+ * Is a point within reach and inside the cone in front of the player?
+ * Returns a score (smaller = better) or null.
+ * @param {{px:number, pz:number, yaw:number}} p
+ * @param {number} x @param {number} z
+ * @param {number} [reach]
+ */
+export function frontScore(p, x, z, reach = TALK_REACH) {
+  const dx = x - p.px;
+  const dz = z - p.pz;
+  const dist = Math.hypot(dx, dz);
+  if (dist > reach || dist < 1e-6) return null;
+  const fx = Math.sin(p.yaw);
+  const fz = Math.cos(p.yaw);
+  const cos = (dx * fx + dz * fz) / dist;
+  const angle = Math.acos(Math.max(-1, Math.min(1, cos)));
+  if (angle > TALK_CONE) return null;
+  return dist + angle * 0.6;
+}
+
 /**
  * Create the interaction handler.
  * @param {any} ctx  session context (see world-session.js)
@@ -83,7 +109,9 @@ export function createInteraction(ctx) {
   /** @param {any} npc */
   function talk(npc) {
     const p = ctx.player.actor.mover;
-    ctx.npcs.prepareTalk(npc, OPPOSITE[p.facing]);
+    const g = npc.mover.ground;
+    ctx.player.faceToward(g.x, g.z);
+    ctx.npcs.prepareTalk(npc, dirBetween(npc.mover.x, npc.mover.y, p.px, p.pz));
     const def = npc.def;
     const fn = def.script ? scriptFor(def.script) : null;
     const run = fn
@@ -107,7 +135,10 @@ export function createInteraction(ctx) {
     const p = ctx.player.actor.mover;
     const member = ctx.state.party?.[0];
     if (!f || !member) return Promise.resolve();
-    f.mover.face(OPPOSITE[p.facing]);
+    ctx.player.faceToward(f.mover.px, f.mover.pz);
+    const dx = p.px - f.mover.px;
+    const dz = p.pz - f.mover.pz;
+    if (Math.hypot(dx, dz) > 1e-6) f.mover.setYaw(Math.atan2(dx, dz));
     const line = pickAffectionLine({
       species: member.species,
       name: member.name,
@@ -126,6 +157,25 @@ export function createInteraction(ctx) {
     });
   }
 
+  /**
+   * Tiles in front of the player, nearest first: the tile the facing ray
+   * reaches, then the cardinal neighbour in the facing direction.
+   * @param {any} p mover
+   */
+  function tilesAhead(p) {
+    const fx = Math.sin(p.yaw);
+    const fz = Math.cos(p.yaw);
+    const out = [];
+    const push = (/** @type {number} */ x, /** @type {number} */ y) => {
+      if (x === p.x && y === p.y) return;
+      if (!out.some((t) => t.x === x && t.y === y)) out.push({ x, y });
+    };
+    push(Math.round(p.px + fx * 0.75), Math.round(p.pz + fz * 0.75));
+    const d = DIRS[yawToDir(p.yaw)];
+    push(p.x + d.dx, p.y + d.dy);
+    return out;
+  }
+
   return {
     /**
      * Interact with whatever is in front of the player.
@@ -134,37 +184,50 @@ export function createInteraction(ctx) {
     tryInteract() {
       const actor = ctx.player.actor;
       const model = ctx.mapModel;
-      if (!actor || !model || actor.mover.moving) return false;
-      const m = actor.mover;
-      const d = DIRS[m.facing];
-      const fx = m.x + d.dx;
-      const fy = m.y + d.dy;
+      if (!actor || !model || ctx.player.scripted) return false;
+      const p = actor.mover;
 
-      const npc = ctx.npcs.at(fx, fy);
-      if (npc) {
-        talk(npc);
+      // 1. People first: the best-placed visible NPC in the cone.
+      let best = null;
+      let bestScore = Infinity;
+      for (const npc of ctx.npcs.list) {
+        if (!npc.visible) continue;
+        const g = npc.mover.ground;
+        const score = frontScore(p, g.x, g.z);
+        if (score !== null && score < bestScore) {
+          best = npc;
+          bestScore = score;
+        }
+      }
+      if (best) {
+        talk(best);
         return true;
       }
 
       const flags = ctx.state.flags;
-      const objects = model.objectsAt(fx, fy).filter((o) => isActive(o, flags));
-      if (objects.some((o) => ACROSS_TYPES.has(o.type))) {
-        const far = ctx.npcs.at(fx + d.dx, fy + d.dy);
-        if (far) {
-          talk(far);
+      const d = DIRS[yawToDir(p.yaw)];
+      for (const tile of tilesAhead(p)) {
+        const objects = model.objectsAt(tile.x, tile.y).filter((o) => isActive(o, flags));
+        // 2. Across a counter or desk.
+        if (objects.some((o) => ACROSS_TYPES.has(o.type))) {
+          const far = ctx.npcs.at(tile.x + d.dx, tile.y + d.dy);
+          if (far) {
+            talk(far);
+            return true;
+          }
+        }
+        // 3. Signs, shelves, machines…
+        const readable =
+          objects.find((o) => o.solid && (o.text || o.script)) ?? objects.find((o) => o.text || o.script);
+        if (readable) {
+          read(readable);
           return true;
         }
       }
 
-      const readable =
-        objects.find((o) => o.solid && (o.text || o.script)) ?? objects.find((o) => o.text || o.script);
-      if (readable) {
-        read(readable);
-        return true;
-      }
-
+      // 4. Your partner.
       const f = ctx.follower.actor;
-      if (f && f.visible && f.mover.x === fx && f.mover.y === fy) {
+      if (f && f.visible && frontScore(p, f.mover.px, f.mover.pz, 1.3) !== null) {
         affection();
         return true;
       }

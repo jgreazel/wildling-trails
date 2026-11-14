@@ -1,38 +1,64 @@
 /**
- * The partner wildling that trails one tile behind the player.
+ * The partner wildling that trails behind the player.
  *
  * - Species = state.party[0]. Spawns behind the player (opposite of facing) if
  *   that tile is reachable and free, else on any free reachable neighbour, else
- *   stays hidden until the player's first step.
- * - Every player step queues the tile the player just left; the follower walks
- *   (or hops a ledge) into it with the same timing, catching up if it lags.
- * - Never blocks the player, but does block NPCs (it occupies its tile + queue).
+ *   stays hidden until the player has walked a little.
+ * - The player's path is recorded as a breadcrumb trail; the follower stands on
+ *   that trail FOLLOW_DISTANCE behind, so it rounds the same corners, climbs the
+ *   same stairs and hops the same ledges (it copies the arc too).
+ * - Never blocks the player, but does block NPCs (it occupies its tile).
  */
-import { DIR_NAMES, HOP_MS, OPPOSITE, dirBetween } from '../config.js';
-import { createMover } from './grid-mover.js';
+import { DIR_NAMES, OPPOSITE } from '../config.js';
+import { createFreeMover } from './free-mover.js';
 import { buildModel, disposeModel, safeEmote } from './actor-utils.js';
 import { easeOutBack } from './clock.js';
 
+/** Path distance (tiles) the follower keeps behind the player. */
+export const FOLLOW_DISTANCE = 1.05;
 /** After this long idle next to an idle player, the follower turns to look at them. */
 const LOOK_AT_PLAYER_MS = 650;
-/** Queue length beyond which the follower simply teleports to catch up. */
-const MAX_QUEUE = 4;
+/** Trail points closer than this are merged. */
+const TRAIL_SPACING = 0.04;
+/** Trail kept beyond the follow distance (tiles). */
+const TRAIL_SLACK = 1.5;
+/** A jump larger than this (warp, teleport) snaps instead of walking. */
+const SNAP_DISTANCE = 2.5;
 
 /** @typedef {import('../config.js').Dir} Dir */
 
 /**
  * @typedef {object} FollowerController
- * @property {any} actor  { kind:'follower', species, model, mover, visible, reserved } | null
+ * @property {any} actor  { kind:'follower', species, model, mover, visible } | null
  * @property {(opts?: {animate?: boolean}) => any} spawn  (re)create for party[0] and place it
  * @property {(opts?: {animate?: boolean}) => void} sync  spawn/despawn if the party changed
  * @property {() => void} despawn
- * @property {(from:{x:number,y:number}, to:{x:number,y:number}, durationMs:number, hop:boolean, running:boolean) => void} onPlayerStep
- * @property {() => void} onPlayerArrive
  * @property {(dtMs:number) => void} update
  * @property {(kind:string, ms?:number) => Promise<void>} emote
  * @property {() => Promise<void>} bounce  hop accent with a small arc
  * @property {() => ({emote:(kind:string) => Promise<void>, hop:() => void})|null} handle
  */
+
+/**
+ * Point on a polyline at `dist` measured back from its last point.
+ * @param {{x:number, y:number, z:number}[]} trail  oldest → newest
+ * @param {number} dist
+ * @returns {{x:number, y:number, z:number, index:number}|null} null when the trail is shorter
+ */
+export function pointBehind(trail, dist) {
+  let left = dist;
+  for (let i = trail.length - 1; i > 0; i--) {
+    const a = trail[i];
+    const b = trail[i - 1];
+    const seg = Math.hypot(a.x - b.x, a.z - b.z);
+    if (seg >= left && seg > 0) {
+      const t = left / seg;
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t, index: i - 1 };
+    }
+    left -= seg;
+  }
+  return null;
+}
 
 /**
  * Create the follower controller.
@@ -42,18 +68,15 @@ const MAX_QUEUE = 4;
 export function createFollowerController(ctx) {
   /** @type {any} */
   let actor = null;
-  /** @type {{x:number, y:number, durationMs:number, running:boolean}[]} */
-  let queue = [];
-  /** @type {{x:number, y:number}|null} tile to appear on after the player's next arrival */
-  let appearAt = null;
+  /** @type {{x:number, y:number, z:number}[]} player positions, oldest → newest */
+  let trail = [];
   let idleMs = 0;
+  let wasAirborne = false;
+  /** @type {{x:number, y:number}} */
+  let lastTile = { x: 0, y: 0 };
 
   function partnerSpecies() {
     return ctx.state.party?.[0]?.species ?? null;
-  }
-
-  function updateReserved() {
-    if (actor) actor.reserved = queue.map((q) => ({ x: q.x, y: q.y }));
   }
 
   /** @param {boolean} visible */
@@ -86,6 +109,13 @@ export function createFollowerController(ctx) {
       });
   }
 
+  /** Player model position (includes the hop arc), or null. */
+  function playerPoint() {
+    const p = ctx.player.actor?.mover;
+    if (!p) return null;
+    return { x: p.px, y: p.py + (p.arc ?? 0), z: p.pz };
+  }
+
   /**
    * Find a free tile next to the player, preferring the one behind them.
    * @returns {{x:number, y:number}|null}
@@ -105,74 +135,115 @@ export function createFollowerController(ctx) {
     return null;
   }
 
+  /** Seed the trail so the follower's spot is already "on the path". */
+  function seedTrail() {
+    const m = actor.mover;
+    const pp = playerPoint();
+    trail = pp ? [{ x: m.px, y: m.py, z: m.pz }, pp] : [];
+  }
+
   function place() {
     const p = ctx.player.actor?.mover;
-    queue = [];
-    updateReserved();
-    appearAt = null;
     idleMs = 0;
+    wasAirborne = false;
     const spot = findSpot();
     if (!spot || !p) {
       setVisible(false);
-      actor.mover.place(p?.x ?? 0, p?.y ?? 0, p?.facing ?? 'down');
-      appearAt = null;
+      actor.mover.place(p?.px ?? 0, p?.pz ?? 0, p?.facing ?? 'down');
       actor.waitingToAppear = true;
+      const pp = playerPoint();
+      trail = pp ? [pp] : [];
+    } else {
+      actor.waitingToAppear = false;
+      actor.mover.place(spot.x, spot.y, p.facing);
+      setVisible(true);
+      seedTrail();
+    }
+    lastTile = { x: actor.mover.x, y: actor.mover.y };
+  }
+
+  function recordTrail() {
+    const pp = playerPoint();
+    if (!pp) return;
+    const last = trail[trail.length - 1];
+    if (last && Math.hypot(pp.x - last.x, pp.z - last.z) < TRAIL_SPACING && Math.abs(pp.y - last.y) < 0.02) {
+      trail[trail.length - 1] = pp; // keep the newest point exact
       return;
     }
-    actor.waitingToAppear = false;
-    actor.mover.place(spot.x, spot.y, p.facing);
-    setVisible(true);
-  }
-
-  /** @param {{x:number, y:number}} tile */
-  function appear(tile) {
-    actor.waitingToAppear = false;
-    const p = ctx.player.actor?.mover;
-    actor.mover.place(tile.x, tile.y, p?.facing ?? 'down');
-    setVisible(true);
-    popIn();
-  }
-
-  function onArrive() {
-    const m = actor.mover;
-    if (ctx.mapModel?.typeAt(m.x, m.y).tallGrass) ctx.rustle(m.x, m.y);
-    startNext();
-  }
-
-  /** @returns {boolean} whether a step began */
-  function startNext() {
-    if (!actor) return false;
-    const m = actor.mover;
-    while (queue.length) {
-      const next = queue.shift();
-      const dx = next.x - m.x;
-      const dy = next.y - m.y;
-      const dist = Math.abs(dx) + Math.abs(dy);
-      if (dist === 0) continue;
-      // Lagging behind (e.g. after a hop): move a little quicker to catch up.
-      const catchUp = queue.length > 0 ? 0.75 : 1;
-      const dir = dirBetween(m.x, m.y, next.x, next.y);
-      if (dist === 1) {
-        m.begin(next.x, next.y, { dir, durationMs: next.durationMs * catchUp, running: next.running });
-      } else if (dist === 2 && (dx === 0 || dy === 0)) {
-        const mx = m.x + dx / 2;
-        const my = m.y + dy / 2;
-        const ledge = !!ctx.mapModel?.typeAt(mx, my).ledge;
-        if (ledge) {
-          m.begin(next.x, next.y, { dir, durationMs: Math.max(next.durationMs, HOP_MS * 0.85) * catchUp, hop: true });
-        } else {
-          m.begin(next.x, next.y, { dir, durationMs: next.durationMs * 1.5 * catchUp, running: true });
-        }
-      } else {
-        // Too far to animate sensibly: snap there.
-        m.place(next.x, next.y, dir);
-        continue;
+    if (last && Math.hypot(pp.x - last.x, pp.z - last.z) > SNAP_DISTANCE) {
+      trail = [pp]; // the player teleported: start over
+      return;
+    }
+    trail.push(pp);
+    // Drop points well beyond the follow distance.
+    let total = 0;
+    for (let i = trail.length - 1; i > 0; i--) {
+      total += Math.hypot(trail[i].x - trail[i - 1].x, trail[i].z - trail[i - 1].z);
+      if (total > FOLLOW_DISTANCE + TRAIL_SLACK) {
+        trail = trail.slice(i - 1);
+        break;
       }
-      updateReserved();
+    }
+  }
+
+  /** @param {number} dtMs */
+  function follow(dtMs) {
+    const m = actor.mover;
+    const target = pointBehind(trail, FOLLOW_DISTANCE);
+    if (!target) {
+      m.moving = false;
+      m.setAnim(false);
+      return false;
+    }
+    if (actor.waitingToAppear) {
+      actor.waitingToAppear = false;
+      m.place(target.x, target.z, ctx.player.actor?.mover.facing ?? 'down');
+      setVisible(true);
+      popIn();
       return true;
     }
-    updateReserved();
-    return false;
+    const dx = target.x - m.px;
+    const dz = target.z - m.pz;
+    const dist = Math.hypot(dx, dz);
+    if (dist > SNAP_DISTANCE) {
+      m.place(target.x, target.z, m.facing);
+      return true;
+    }
+    const moved = dist > 1e-4;
+    if (moved) {
+      m.setYaw(Math.atan2(dx, dz));
+      m.setPosition(target.x, target.z);
+    }
+    // Copy the player's height along the trail (stairs, hop arcs).
+    const ground = ctx.surfaceY(m.x, m.y);
+    const airborne = target.y - ground > 0.12;
+    if (airborne && !wasAirborne) {
+      try {
+        m.model?.hop?.();
+      } catch {
+        /* ignore */
+      }
+    }
+    wasAirborne = airborne;
+    m.hop = airborne;
+    if (airborne) {
+      m.py = ground;
+      m.arc = target.y - ground;
+    } else {
+      m.arc = 0;
+    }
+    const speed = dist / Math.max(dtMs / 1000, 1e-6);
+    const walking = moved && speed > 0.3 && !airborne;
+    const running = !!ctx.player.actor?.mover.running;
+    m.moving = walking || airborne;
+    m.running = running;
+    m.setAnim(walking, running);
+    m.applyPose(dtMs / 1000);
+    if (m.x !== lastTile.x || m.y !== lastTile.y) {
+      lastTile = { x: m.x, y: m.y };
+      if (ctx.mapModel?.typeAt(m.x, m.y).tallGrass) ctx.rustle(m.x, m.y);
+    }
+    return moved;
   }
 
   /** @param {{animate?: boolean}} [opts] */
@@ -187,8 +258,8 @@ export function createFollowerController(ctx) {
       const model = buildModel(ctx.deps.createWildlingModel, species, ctx.logger, `follower ${species}`);
       ctx.scene?.add?.(model.group);
       const p = ctx.player.actor.mover;
-      const mover = createMover({ model, x: p.x, y: p.y, facing: p.facing, surfaceY: ctx.surfaceY, onArrive });
-      actor = { kind: 'follower', id: 'follower', species, model, mover, visible: false, reserved: [], waitingToAppear: false };
+      const mover = createFreeMover({ model, x: p.x, y: p.y, facing: p.facing, radius: 0.25, surfaceY: ctx.surfaceY });
+      actor = { kind: 'follower', id: 'follower', species, model, mover, visible: false, waitingToAppear: false };
       ctx.occupancy.add(actor);
     }
     place();
@@ -229,8 +300,7 @@ export function createFollowerController(ctx) {
     ctx.occupancy.remove(actor);
     disposeModel(ctx.scene, actor.model, ctx.logger);
     actor = null;
-    queue = [];
-    appearAt = null;
+    trail = [];
   }
 
   return {
@@ -252,45 +322,20 @@ export function createFollowerController(ctx) {
 
     despawn,
 
-    // `to` and `hop` are part of the hook signature; the trail only needs `from`.
-    onPlayerStep(from, _to, durationMs, _hop, running) {
-      if (!actor) return;
-      if (!actor.visible) {
-        if (actor.waitingToAppear) appearAt = { x: from.x, y: from.y };
-        return;
-      }
-      queue.push({ x: from.x, y: from.y, durationMs, running: !!running });
-      if (queue.length > MAX_QUEUE) {
-        const last = queue[queue.length - 1];
-        queue = [];
-        actor.mover.place(last.x, last.y, actor.mover.facing);
-      }
-      updateReserved();
-      if (!actor.mover.moving) startNext();
-    },
-
-    onPlayerArrive() {
-      if (!actor || !appearAt) return;
-      const tile = appearAt;
-      appearAt = null;
-      // Someone else stepped there first: try again after the next step.
-      if (ctx.occupancy.at(tile.x, tile.y, { except: actor, ignoreFollower: true })) return;
-      appear(tile);
-    },
-
     update(dtMs) {
       if (!actor) return;
-      const m = actor.mover;
-      if (m.moving) m.advance(dtMs);
-      else if (queue.length && startNext()) m.advance(dtMs);
+      recordTrail();
+      const moved = follow(dtMs);
 
       // Idle: glance at the player after a moment.
+      const m = actor.mover;
       const p = ctx.player.actor?.mover;
-      if (!m.moving && actor.visible && p && !p.moving) {
+      if (!moved && actor.visible && p && !p.moving) {
         idleMs += dtMs;
         if (idleMs >= LOOK_AT_PLAYER_MS) {
-          const dist = Math.abs(p.x - m.x) + Math.abs(p.y - m.y);
-          if (dist === 1) m.face(dirBetween(m.x, m.y, p.x, p.y));
+          const dx = p.px - m.px;
+          const dz = p.pz - m.pz;
+          if (Math.hypot(dx, dz) < 1.6 && Math.hypot(dx, dz) > 1e-3) m.setYaw(Math.atan2(dx, dz));
         }
       } else {
         idleMs = 0;
@@ -315,4 +360,3 @@ export function createFollowerController(ctx) {
     },
   };
 }
-

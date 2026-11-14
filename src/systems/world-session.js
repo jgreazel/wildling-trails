@@ -1,7 +1,7 @@
 /**
  * World session: owns the live map and everything walking around on it.
  *
- * Wires together the grid movers, player/NPC/follower controllers, interaction,
+ * Wires together the free-moving player and follower, the grid-based NPCs, player/NPC/follower controllers, interaction,
  * arrival rules (warps, triggers, tall grass), flavour encounters, map music and
  * the Script API. See docs/ARCHITECTURE.md → "systems".
  */
@@ -35,7 +35,7 @@ import { createScriptApi } from './script-api.js';
 
 /** After any script/warp ends, ignore the a-button this long (no accidental re-talk). */
 const INTERACT_COOLDOWN_MS = 160;
-/** An a-press during the last moments of a step is remembered this long. */
+/** An a-press during a ledge hop is remembered this long. */
 const INTERACT_BUFFER_MS = 150;
 /** A fade that never settles must not freeze the game. */
 const FADE_TIMEOUT_MS = 1500;
@@ -71,7 +71,8 @@ const FADE_TIMEOUT_MS = 1500;
  * @property {boolean} busy
  * @property {boolean} paused
  * @property {any} mapModel
- * @property {{x:number, y:number, facing:Dir}} playerTile
+ * @property {{x:number, y:number, facing:Dir}} playerTile  tile under the player
+ * @property {{x:number, z:number, yaw:number, moving:boolean}|null} playerPos  continuous position
  * @property {() => void} dispose  detach bus listeners and free the map (tests / hot reload)
  */
 
@@ -459,18 +460,19 @@ export function createWorldSession({ scene, cameraRig, dayNight, ui = {}, audio,
     } catch {
       wants = false;
     }
-    if (wants && p.mover.moving) {
+    // Free movement: talk on the move. Only a hop or a scripted walk defers the press.
+    if (wants && ctx.player.scripted) {
       interactBuffer = INTERACT_BUFFER_MS;
       return;
     }
     if (interactBuffer > 0) {
       interactBuffer -= dtMs;
-      if (!p.mover.moving) {
+      if (!ctx.player.scripted) {
         interactBuffer = 0;
         wants = true;
       }
     }
-    if (wants && !p.mover.moving) ctx.interaction.tryInteract();
+    if (wants && !ctx.player.scripted) ctx.interaction.tryInteract();
   }
 
   /** @param {number} dt seconds */
@@ -583,6 +585,12 @@ export function createWorldSession({ scene, cameraRig, dayNight, ui = {}, audio,
     },
     get mapModel() {
       return ctx.mapModel;
+    },
+    /** Continuous player position (tiles) and whether they are moving. */
+    get playerPos() {
+      const m = ctx.player.actor?.mover;
+      if (!m) return null;
+      return { x: m.px, z: m.pz, yaw: m.yaw, moving: !!m.moving };
     },
     get playerTile() {
       const m = ctx.player.actor?.mover;

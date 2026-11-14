@@ -33,6 +33,7 @@ const SHADOW_Y = 0.012;
  * @property {THREE.Group} group  origin at feet; faces +z at rotation 0
  * @property {number} height      approx. top of head (for emotes)
  * @property {(dir: string, instant?: boolean) => void} setFacing
+ * @property {(yaw: number, instant?: boolean) => void} setYaw  free facing (radians, see FACING_ANGLE)
  * @property {(moving: boolean, running?: boolean) => void} setMoving
  * @property {() => void} hop
  * @property {(kind: string, ms?: number) => Promise<void>} emote
@@ -266,6 +267,21 @@ export function createActorController(o) {
       if (disposed || !Object.prototype.hasOwnProperty.call(FACING_ANGLE, dir)) return;
       facing = dir;
       targetYaw = FACING_ANGLE[/** @type {keyof typeof FACING_ANGLE} */ (dir)];
+      if (instant) {
+        group.rotation.y = targetYaw;
+        turning = false;
+      } else {
+        turning = Math.abs(wrapAngle(targetYaw - group.rotation.y)) > 1e-4;
+        if (!turning) group.rotation.y = targetYaw;
+      }
+    },
+
+    setYaw(yaw, instant = false) {
+      if (disposed || !Number.isFinite(yaw)) return;
+      targetYaw = wrapAngle(yaw);
+      const x = Math.sin(targetYaw);
+      const z = Math.cos(targetYaw);
+      facing = Math.abs(x) > Math.abs(z) ? (x > 0 ? 'right' : 'left') : z >= 0 ? 'down' : 'up';
       if (instant) {
         group.rotation.y = targetYaw;
         turning = false;

@@ -99,6 +99,8 @@ export function createGamepadPoller(input, options = {}) {
   /** @type {Map<number, Dir|null>} pad index → stick direction */
   const sticks = new Map();
   let connected = 0;
+  /** @type {Set<string>} stick sources that may hold an axis */
+  const stickSources = new Set();
 
   /** @param {string} source @param {Action} action @param {boolean} down */
   function set(source, action, down) {
@@ -142,10 +144,18 @@ export function createGamepadPoller(input, options = {}) {
         sticks.set(key, dir);
         const stickSource = `${id}:stick`;
         seen.add(stickSource);
+        // Directions drive menus; the raw axes drive free movement.
         set(stickSource, dir ?? 'up', dir !== null);
+        input.setAxis?.(stickSource, axes[0] ?? 0, axes[1] ?? 0);
+        stickSources.add(stickSource);
       }
       // A pad vanished (disconnect, Bluetooth sleep): release what it held.
       for (const source of [...active.keys()]) if (!seen.has(source)) set(source, active.get(source), false);
+      for (const source of [...stickSources]) {
+        if (seen.has(source)) continue;
+        input.setAxis?.(source, 0, 0);
+        stickSources.delete(source);
+      }
       connected = count;
     },
 
@@ -157,6 +167,8 @@ export function createGamepadPoller(input, options = {}) {
     /** Release everything this poller holds. */
     reset() {
       for (const [source, action] of active) input.setSource(action, source, false);
+      for (const source of stickSources) input.setAxis?.(source, 0, 0);
+      stickSources.clear();
       active.clear();
       sticks.clear();
     },
